@@ -12,6 +12,7 @@ Compute (Linode), Cloud Firewall, VPC, Object Storage, and Managed PostgreSQL.
 import json
 import os
 import secrets
+import socket
 import sys
 import threading
 import time
@@ -40,7 +41,10 @@ MY_IP = requests.get("https://api.ipify.org", timeout=10).text.strip()
 
 
 def db():
-    return psycopg.connect(host=os.environ["PGHOST"], port=os.environ["PGPORT"], user=os.environ["PGUSER"],
+    # Connect over IPv4. The database host also resolves to IPv6, which the allow list blocks, so connecting
+    # to it first stalls every connection for the whole timeout.
+    ipv4 = socket.getaddrinfo(os.environ["PGHOST"], int(os.environ["PGPORT"]), socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
+    return psycopg.connect(host=os.environ["PGHOST"], hostaddr=ipv4, port=os.environ["PGPORT"], user=os.environ["PGUSER"],
                            password=os.environ["PGPASSWORD"], dbname=os.environ["PGDATABASE"],
                            sslmode=os.environ["PGSSLMODE"], connect_timeout=10, autocommit=True)
 
@@ -345,6 +349,7 @@ Finally summarize what was built: Linode ID and IP, firewall rules, bucket URL, 
 For questions about the account use list_linodes, list_firewalls, list_buckets or list_environments.
 Protected resources (never delete, modify or reuse them; warn the user instead): {"; ".join(PROTECTED["names"]) or "none found"}.
 If teardown returns a WARNING, relay it and wait. Never set confirm_protected unless the user's own message contains the phrase.
+Keep replies short: a few lines or bullets, no long tables, under 100 words unless asked for detail.
 Never print secret keys. Use a short lowercase label such as 'scraper'. Do not ask questions the defaults answer."""
 
 

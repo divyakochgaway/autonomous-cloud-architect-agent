@@ -157,7 +157,7 @@
   async function follow(jobId, stepsItem, stepsBox) {
     const thinking = add("hint", "Thinking...");
     for (;;) {
-      await new Promise((r) => setTimeout(r, 1500));
+      await new Promise((r) => setTimeout(r, 800));
       const r = await send({ type: "job", id: jobId });
       if (r && !r.ok && /404/.test(r.error)) { // the backend restarted and forgot this job
         thinking.remove();
