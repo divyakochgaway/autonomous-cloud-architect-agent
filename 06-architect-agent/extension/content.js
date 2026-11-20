@@ -5,9 +5,17 @@
   // Saved in the extension's storage, so a reload or a new tab gets the same conversation back.
   const newSession = () => Math.random().toString(36).slice(2);
   let state = { session: newSession(), history: [], pending: null }; // pending: id of a job still running
-  const save = () => chrome.storage.local.set({ architect: state });
+  const RELOADED = "The extension was reloaded or updated. Refresh this page to reconnect.";
+  const save = () => { try { chrome.storage.local.set({ architect: state }); } catch (e) { /* context invalidated */ } };
 
-  const send = (msg) => new Promise((resolve) => chrome.runtime.sendMessage(msg, resolve));
+  // After the extension is reloaded, an open tab keeps a dead copy of this script. Report that instead of throwing.
+  const send = (msg) => new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(msg, (r) => resolve(chrome.runtime.lastError ? { ok: false, error: RELOADED } : r));
+    } catch (e) {
+      resolve({ ok: false, error: RELOADED });
+    }
+  });
   const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
   const host = document.createElement("div");
@@ -154,6 +162,11 @@
       if (r && !r.ok && /404/.test(r.error)) { // the backend restarted and forgot this job
         thinking.remove();
         push({ type: "bot", text: "I lost track of that request because the backend restarted. Ask again.", error: true });
+        break;
+      }
+      if (r && !r.ok && r.error === RELOADED) {
+        thinking.remove();
+        push({ type: "bot", text: RELOADED, error: true });
         break;
       }
       if (!r || !r.ok) continue;
