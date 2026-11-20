@@ -1,5 +1,21 @@
 # Autonomous Cloud Architect Agent
 
+```text
+User and task: A developer or small team that needs a locked-down environment (server, network rules, storage, record keeping) and does not want to click through five Cloud Manager pages. They type what they need on cloud.linode.com and watch it get built.
+Benefit: One sentence builds a firewalled, private-network environment in under a minute, every step is recorded for audit, and "what have I built?" and teardown work from the same record, so nothing is left billing.
+Services:
+  - Compute: runs the backend 24/7 as a systemd service, and the agent creates a 1 GB Linode per environment.
+  - Managed PostgreSQL: the environment registry that teardown and "what have I built?" depend on, plus the chat audit log that rebuilds a session after a restart.
+  - Object Storage: an append-only JSON archive of every chat turn (key limited to that one bucket), plus a private bucket and a bucket-scoped key per environment with a manifest.json.
+  - Cloud Firewall: each environment gets a default-drop firewall that allows SSH only from the requester's own IP and HTTPS from anywhere.
+  - VPC: each Linode joins a private subnet created for it.
+Inference: qwen3-8-27b (the event key's chat and tool-calling model). The agent chains 8 tools and uses real IDs from earlier results. Checked by running the full build and teardown through the extension backend, asking for something it has no tool for (a Kubernetes cluster: it said so and offered alternatives), and asking to delete an environment that does not exist (it looked it up and reported none).
+Technical choice: Access and reliability. API keys stay on the backend, so the Chrome extension holds only a shared key. Tools return errors as text so the model can recover, and teardown reads the registry in PostgreSQL instead of trusting the model to remember IDs.
+Our idea: The agent lives inside the console where the work happens, and the Activity tab shows Akamai's own event history (done, in progress, failed) next to the chat, so you see the result of every tool call.
+Demo: 1) Open cloud.linode.com, the panel appears. 2) "I need a secure data scraping environment in Seattle." 3) Watch the tool steps in Chat and the events in Activity, with the new Linode, firewall, VPC and bucket appearing in Cloud Manager. 4) "What have I built so far?" answers from PostgreSQL. 5) Show a JSON object in the audit bucket. 6) "Tear down environment N" and the resources disappear.
+Known limits: Backend uses plain HTTP and one shared key. Regions are fixed (Linode in Seattle, buckets in Chicago). The VPC address is hardcoded, so one environment per VPC. The small model can pick odd labels. No login or per-user permissions. Retention rules for the audit logs are not set.
+```
+
 Ask for an environment in plain English. The model calls tools that build it across Akamai Cloud.
 
 | Service | What the agent does with it |
