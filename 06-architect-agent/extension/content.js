@@ -2,8 +2,10 @@
 (() => {
   if (document.getElementById("akamai-architect-host")) return;
 
-  const session = sessionStorage.getItem("architect-session") || Math.random().toString(36).slice(2);
-  sessionStorage.setItem("architect-session", session);
+  // Saved in the extension's storage, so a reload or a new tab gets the same conversation back.
+  const newSession = () => Math.random().toString(36).slice(2);
+  let state = { session: newSession(), history: [], pending: null }; // pending: id of a job still running
+  const save = () => chrome.storage.local.set({ architect: state });
 
   const send = (msg) => new Promise((resolve) => chrome.runtime.sendMessage(msg, resolve));
   const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -49,7 +51,7 @@
   </style>
   <button class="fab" title="Cloud Architect">&#9729;</button>
   <div class="panel">
-    <header><span>Cloud Architect <small>Akamai Inference + Cloud</small></span><span class="close" style="cursor:pointer">&#10005;</span></header>
+    <header><span>Cloud Architect <small>Akamai Inference + Cloud</small></span><span><span class="new" title="Start a new chat" style="cursor:pointer;margin-right:12px;font-weight:400">New chat</span><span class="close" style="cursor:pointer">&#10005;</span></span></header>
     <div class="tabs"><button class="on" data-tab="chat">Chat</button><button data-tab="activity">Activity <span class="badge"></span></button></div>
     <div class="view on" id="chat">
       <div class="hint">Describe what you need. Try:<br>
@@ -73,7 +75,16 @@
     activity.classList.toggle("on", b.dataset.tab === "activity");
     if (b.dataset.tab === "activity") loadEvents();
   }));
-  root.querySelectorAll(".chip").forEach((c) => (c.onclick = () => { input.value = c.textContent; ask(); }));
+  const hintHTML = chat.innerHTML;
+  chat.addEventListener("click", (e) => {
+    if (e.target.classList.contains("chip")) { input.value = e.target.textContent; ask(); }
+  });
+  $(".new").onclick = () => {
+    if (busy) return;
+    state = { session: newSession(), history: [], pending: null };
+    save();
+    chat.innerHTML = hintHTML;
+  };
   $("form").onsubmit = (e) => { e.preventDefault(); ask(); };
 
   // Small markdown renderer: tables, bold, headings, lists.
@@ -104,30 +115,64 @@
 
   const stepLabel = (s) => `<span class="dot"></span><b>${s.tool}</b> ${Object.keys(s.args || {}).length ? esc(JSON.stringify(s.args)) : ""}` +
     (s.status === "failed" ? `<br>${esc(s.result || "")}` : "");
+  const stepsHTML = (steps) => steps.map((s) => `<div class="step ${s.status}">${stepLabel(s)}</div>`).join("");
+
+  // Draws one saved history item. Returns its element so a running job can keep updating it.
+  function render(item) {
+    if (item.type === "user") return add("msg user", esc(item.text));
+    if (item.type === "bot") return add("msg bot", item.error ? "Error: " + esc(item.text) : md(item.text));
+    return add("", stepsHTML(item.steps));
+  }
+
+  function push(item) {
+    state.history.push(item);
+    save();
+    return render(item);
+  }
+
+  // Polls a job until it finishes, updating the steps item as it goes. Also used to resume after a reload.
+  async function follow(jobId, stepsItem, stepsBox) {
+    const thinking = add("hint", "Thinking...");
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const r = await send({ type: "job", id: jobId });
+      if (r && !r.ok && /404/.test(r.error)) { // the backend restarted and forgot this job
+        thinking.remove();
+        push({ type: "bot", text: "I lost track of that request because the backend restarted. Ask again.", error: true });
+        break;
+      }
+      if (!r || !r.ok) continue;
+      const job = r.data;
+      stepsItem.steps = job.steps;
+      stepsBox.innerHTML = stepsHTML(job.steps);
+      chat.scrollTop = chat.scrollHeight;
+      if (job.done) {
+        thinking.remove();
+        push({ type: "bot", text: job.error || job.reply || "", error: !!job.error });
+        break;
+      }
+    }
+    state.pending = null;
+    save();
+    busy = false;
+    loadEvents();
+  }
 
   async function ask() {
     const text = input.value.trim();
     if (!text || busy) return;
     busy = true; input.value = "";
-    add("msg user", esc(text));
-    const started = await send({ type: "chat", session, message: text });
-    if (!started || !started.ok) { add("msg bot", "Could not reach the backend: " + esc(started ? started.error : "no response")); busy = false; return; }
-    const stepsBox = add("", ""), thinking = add("hint", "Thinking...");
-    for (;;) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const r = await send({ type: "job", id: started.data.job });
-      if (!r || !r.ok) continue;
-      const job = r.data;
-      stepsBox.innerHTML = job.steps.map((s) => `<div class="step ${s.status}">${stepLabel(s)}</div>`).join("");
-      chat.scrollTop = chat.scrollHeight;
-      if (job.done) {
-        thinking.remove();
-        add("msg bot", job.error ? "Error: " + esc(job.error) : md(job.reply || ""));
-        break;
-      }
+    push({ type: "user", text });
+    const started = await send({ type: "chat", session: state.session, message: text });
+    if (!started || !started.ok) {
+      push({ type: "bot", text: "Could not reach the backend: " + (started ? started.error : "no response"), error: true });
+      busy = false;
+      return;
     }
-    busy = false;
-    loadEvents();
+    state.pending = started.data.job;
+    const stepsItem = { type: "steps", steps: [] };
+    const stepsBox = push(stepsItem);
+    follow(state.pending, stepsItem, stepsBox);
   }
 
   const ago = (iso) => {
@@ -151,4 +196,16 @@
   setInterval(() => { if (panel.classList.contains("open")) loadEvents(); }, 4000);
   panel.classList.add("open"); // pops up when cloud.linode.com loads
   loadEvents();
+
+  chrome.storage.local.get("architect", ({ architect }) => {
+    if (!architect) return;
+    state = architect;
+    if (state.history.length) chat.innerHTML = "";
+    let lastSteps, lastBox;
+    for (const item of state.history) {
+      const box = render(item);
+      if (item.type === "steps") { lastSteps = item; lastBox = box; }
+    }
+    if (state.pending && lastSteps) { busy = true; follow(state.pending, lastSteps, lastBox); } // the request was still running
+  });
 })();
