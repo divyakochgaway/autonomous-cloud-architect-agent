@@ -20,6 +20,11 @@
     * { box-sizing: border-box; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
     .fab { position: fixed; right: 20px; bottom: 20px; width: 56px; height: 56px; border-radius: 50%; border: 0;
       background: #0b6bcb; color: #fff; font-size: 26px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.3); z-index: 2147483647; }
+    .tip { position: fixed; right: 88px; bottom: 26px; max-width: 230px; padding: 10px 28px 10px 12px; background: #fff; color: #1a1f27;
+      border-radius: 12px; font-size: 13px; line-height: 1.4; box-shadow: 0 4px 16px rgba(0,0,0,.25); z-index: 2147483647; cursor: pointer; }
+    .tip::after { content: ""; position: absolute; right: -7px; bottom: 16px; border: 7px solid transparent; border-left-color: #fff; border-right: 0; }
+    .tip .x { position: absolute; top: 4px; right: 9px; color: #7a8594; font-size: 14px; }
+    .tip.hide { display: none; }
     .panel { position: fixed; right: 20px; bottom: 88px; width: 400px; height: 580px; background: #fff; color: #1a1f27;
       border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,.35); display: none; flex-direction: column; overflow: hidden; z-index: 2147483647; }
     .panel.open { display: flex; }
@@ -50,6 +55,7 @@
     .chip { display: inline-block; margin: 3px 3px 0 0; padding: 4px 9px; border-radius: 12px; background: #e4effc; color: #0b5cad; cursor: pointer; font-size: 12px; }
   </style>
   <button class="fab" title="Cloud Architect">&#9729;</button>
+  <div class="tip"><b>AI Cloud Architect</b><br>Ask me in plain English to build, check or tear down your Akamai infrastructure.<span class="x">&#10005;</span></div>
   <div class="panel">
     <header><span>Cloud Architect <small>Akamai Inference + Cloud</small></span><span><span class="new" title="Start a new chat" style="cursor:pointer;margin-right:12px;font-weight:400">New chat</span><span class="close" style="cursor:pointer">&#10005;</span></span></header>
     <div class="tabs"><button class="on" data-tab="chat">Chat</button><button data-tab="activity">Activity <span class="badge"></span></button></div>
@@ -67,8 +73,17 @@
   const panel = $(".panel"), chat = $("#chat"), activity = $("#activity"), input = $("input");
   let busy = false;
 
-  $(".fab").onclick = () => panel.classList.toggle("open");
-  $(".close").onclick = () => panel.classList.remove("open");
+  const tip = $(".tip");
+  const setOpen = (open) => {
+    panel.classList.toggle("open", open);
+    if (open) tip.classList.add("hide"); // the hint is only for people who have not opened the panel
+  };
+  $(".fab").onclick = () => setOpen(!panel.classList.contains("open"));
+  $(".close").onclick = () => setOpen(false);
+  tip.onclick = (e) => {
+    if (e.target.classList.contains("x")) tip.classList.add("hide");
+    else setOpen(true);
+  };
   root.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => {
     root.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("on", x === b));
     chat.classList.toggle("on", b.dataset.tab === "chat");
@@ -194,8 +209,7 @@
   }
 
   setInterval(() => { if (panel.classList.contains("open")) loadEvents(); }, 4000);
-  panel.classList.add("open"); // pops up when cloud.linode.com loads
-  loadEvents();
+  loadEvents(); // the panel stays minimized until the icon is clicked
 
   chrome.storage.local.get("architect", ({ architect }) => {
     if (!architect) return;

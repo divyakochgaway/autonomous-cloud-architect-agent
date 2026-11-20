@@ -47,7 +47,7 @@ Demo prompts, with Cloud Manager open beside the terminal:
 
 ## Chrome extension on cloud.linode.com
 
-A chat panel pops up on every cloud.linode.com page. The **Chat** tab runs the agent and shows each tool call as running, done or failed. The **Activity** tab shows the account's event history, refreshed every few seconds, with each item marked done, in progress (with percent) or failed. Questions like "what linodes and firewalls do I have?" are answered from the account, read-only.
+A small hint bubble sits next to a floating ☁ icon on every cloud.linode.com page. Click it to open the chat panel. The **Chat** tab runs the agent and shows each tool call as running, done or failed. The **Activity** tab shows the account's event history, refreshed every few seconds, with each item marked done, in progress (with percent) or failed. Questions like "what linodes and firewalls do I have?" are answered from the account, read-only.
 
 ```text
 Chrome extension  ->  FastAPI backend on the Linode (server.py, port 8000)  ->  Inference, Linode API, Object Storage, PostgreSQL
