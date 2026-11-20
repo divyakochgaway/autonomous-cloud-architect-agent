@@ -80,6 +80,15 @@ Every chat turn is recorded by `server.py`, for reference and compliance:
 
 Secret keys are never shown to the model or logged, but anything a user types is stored as typed. Set a retention rule on the bucket and the table to suit your policy. The audit bucket is separate from the environment buckets, so teardown does not delete it, and it still bills with Object Storage.
 
+## Protected resources
+
+At startup the agent works out what it depends on: the Linode it runs on (matched by its public IP, or `PROTECTED_LINODE_IDS` in `.env`), that Linode's firewalls, the PostgreSQL cluster it connects to, and the audit bucket `OBJ_BUCKET`. For those it will:
+
+- **warn and delete nothing** when a teardown includes any of them. Deleting is only allowed if the user types exactly `CONFIRM DELETE PROTECTED`, and the model's own say-so is not enough;
+- refuse to attach a new firewall to the host Linode, to create a bucket with the audit bucket's name, or to register protected resources as an environment, which would let a later teardown delete them.
+
+Other Linodes, firewalls and buckets, such as the ones the agent builds, are deleted without extra confirmation. The guard covers the agent's own tools only. Cloud Manager and `scripts/cleanup.sh` are not affected.
+
 ## Cost and cleanup
 
 Linode $0.18 a day, Object Storage $5 a month for the account. Firewalls and VPCs are free. Run the teardown prompt, or `bash scripts/cleanup.sh sea-hackit- --dry-run` and then without `--dry-run`. See [cleanup](../docs/cleanup.md).

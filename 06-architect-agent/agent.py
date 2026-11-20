@@ -13,6 +13,7 @@ import json
 import os
 import secrets
 import sys
+import threading
 import time
 
 import boto3
@@ -50,6 +51,51 @@ with db() as conn:
         vpc_id BIGINT, bucket TEXT, key_id BIGINT, status TEXT DEFAULT 'active', created_at TIMESTAMPTZ DEFAULT now())""")
 
 
+# ---------- Guardrails: whatever this agent itself runs on is protected ----------
+_ctx = threading.local()  # the user's latest message for the request being handled
+CONFIRM_PHRASE = "CONFIRM DELETE PROTECTED"
+
+
+def find_protected():
+    """The Linode hosting this agent, its firewalls, the audit bucket and the database it uses."""
+    p = {"linodes": set(), "firewalls": set(), "buckets": set(), "names": []}
+    extra = {int(x) for x in os.environ.get("PROTECTED_LINODE_IDS", "").split(",") if x.strip()}
+    try:
+        for inst in linode.linode.instances():
+            if inst.id in extra or MY_IP in inst.ipv4:
+                p["linodes"].add(inst.id)
+                p["names"].append(f"Linode {inst.label} ({inst.id}), which runs this agent")
+        for fw in linode.networking.firewalls():  # Linode Interfaces attach firewalls to interfaces, so match on the device URL
+            for dev in fw.devices:
+                if any(f"/instances/{i}" in str(dev.entity.url) or dev.entity.id == i for i in p["linodes"]):
+                    p["firewalls"].add(fw.id)
+                    p["names"].append(f"firewall {fw.label} ({fw.id}), which protects that Linode")
+                    break
+        for d in linode.database.postgresql_instances():
+            if d.hosts.primary == os.environ["PGHOST"]:
+                p["names"].append(f"PostgreSQL cluster {d.label} ({d.id}), which stores this agent's records")
+    except Exception as e:
+        print("protected lookup failed:", e)
+    if os.environ.get("OBJ_BUCKET"):
+        p["buckets"].add(os.environ["OBJ_BUCKET"])
+        p["names"].append(f"Object Storage bucket {os.environ['OBJ_BUCKET']}, the audit archive")
+    return p
+
+
+PROTECTED = find_protected()
+
+
+def protected_hits(linode_id=None, firewall_id=None, bucket=None):
+    hits = []
+    if linode_id is not None and int(linode_id) in PROTECTED["linodes"]:
+        hits.append(f"Linode {linode_id} (hosts this agent)")
+    if firewall_id is not None and int(firewall_id) in PROTECTED["firewalls"]:
+        hits.append(f"firewall {firewall_id} (protects the agent's Linode)")
+    if bucket in PROTECTED["buckets"]:
+        hits.append(f"bucket {bucket} (the audit archive)")
+    return hits
+
+
 # ---------- Tools. Each returns a string, so the model sees failures too. ----------
 
 def create_vpc(region, label):
@@ -78,6 +124,9 @@ def create_linode(region, label, subnet_id=None):
 def create_and_attach_firewall(linode_id, my_ip, label="fw"):
     """Cloud Firewall: drop all inbound except SSH from my_ip/32 and HTTPS from anywhere."""
     try:
+        if protected_hits(linode_id=linode_id):
+            return (f"Refused: Linode {linode_id} hosts this agent. A new firewall could lock the agent out. "
+                    "Change its firewall in Cloud Manager instead.")
         rules = {
             "inbound_policy": "DROP", "outbound_policy": "ACCEPT", "outbound": [],
             "inbound": [
@@ -98,6 +147,8 @@ def provision_object_storage(bucket_label):
     """Object Storage: a private bucket plus an access key limited to that bucket."""
     try:
         bucket = PREFIX + bucket_label
+        if protected_hits(bucket=bucket):
+            return f"Refused: {bucket} is the agent's audit archive. Choose a different bucket_label."
         linode.object_storage.bucket_create(STORAGE_REGION, bucket, endpoint_type=ObjectStorageEndpointType.E3)
         keys = linode.object_storage.keys_create(
             bucket + "-key",
@@ -132,6 +183,9 @@ def upload_manifest(bucket, linode_id, linode_ip, firewall_id, vpc_id):
 def record_environment(label, linode_id, linode_ip, firewall_id, vpc_id, bucket, key_id):
     """Managed PostgreSQL: remember what was built."""
     try:
+        hits = protected_hits(linode_id, firewall_id, bucket)
+        if hits:
+            return "Refused: that would register protected resources as a deletable environment: " + ", ".join(hits)
         with db() as conn:
             row = conn.execute(
                 "INSERT INTO environments (label, linode_id, linode_ip, firewall_id, vpc_id, bucket, key_id) "
@@ -154,13 +208,24 @@ def list_environments():
         return f"list_environments failed: {e}"
 
 
-def teardown(environment_id):
+def teardown(environment_id, confirm_protected=False):
     """Deletes the Linode, firewall, VPC, bucket and key of an environment recorded in PostgreSQL."""
     try:
         with db() as conn:
-            r = conn.execute("SELECT linode_id, firewall_id, vpc_id, bucket, key_id FROM environments WHERE id=%s",
+            r = conn.execute("SELECT linode_id, firewall_id, vpc_id, bucket, key_id, status FROM environments WHERE id=%s",
                              (int(environment_id),)).fetchone()
-        linode_id, firewall_id, vpc_id, bucket, key_id = r
+        if not r:
+            return f"No environment #{environment_id} exists."
+        linode_id, firewall_id, vpc_id, bucket, key_id, status = r
+        if status == "deleted":
+            return f"Environment #{environment_id} is already deleted."
+        hits = protected_hits(linode_id, firewall_id, bucket)
+        if hits:
+            allowed = confirm_protected and CONFIRM_PHRASE in getattr(_ctx, "user_text", "")
+            if not allowed:
+                return ("WARNING, nothing was deleted. Environment #" + str(environment_id) + " includes resources this agent "
+                        "depends on: " + ", ".join(hits) + ". Deleting them would take the agent down. Tell the user this. "
+                        f"Only if they really want it, they must type exactly: {CONFIRM_PHRASE}")
         done = []
         for what, fn in (
             ("linode", lambda: linode.load(Instance, linode_id).delete()),
@@ -263,8 +328,9 @@ TOOLS = [
     tool("list_linodes", "List all Linodes on the Akamai account (id, label, status, region, IP).", {}, []),
     tool("list_firewalls", "List all Cloud Firewalls on the account with their inbound rules.", {}, []),
     tool("list_buckets", "List all Object Storage buckets on the account.", {}, []),
-    tool("teardown", "Delete all resources of a recorded environment by its environment id.",
-         {"environment_id": I}, ["environment_id"]),
+    tool("teardown", "Delete all resources of a recorded environment by its environment id. Refuses and warns when the "
+         "environment includes protected resources the agent runs on. Set confirm_protected only after the user typed the confirmation phrase.",
+         {"environment_id": I, "confirm_protected": {"type": "boolean"}}, ["environment_id"]),
 ]
 
 def make_system(ip):
@@ -277,6 +343,8 @@ passing real IDs from earlier results:
 6. record_environment (use key_id from step 4)
 Finally summarize what was built: Linode ID and IP, firewall rules, bucket URL, VPC, and the PostgreSQL record id.
 For questions about the account use list_linodes, list_firewalls, list_buckets or list_environments.
+Protected resources (never delete, modify or reuse them; warn the user instead): {"; ".join(PROTECTED["names"]) or "none found"}.
+If teardown returns a WARNING, relay it and wait. Never set confirm_protected unless the user's own message contains the phrase.
 Never print secret keys. Use a short lowercase label such as 'scraper'. Do not ask questions the defaults answer."""
 
 
@@ -285,6 +353,7 @@ SYSTEM = make_system(MY_IP)
 
 def run_agent(messages, on_step=None):
     """Keep calling the model until it stops asking for tools."""
+    _ctx.user_text = next((m["content"] for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"), "")
     while True:
         reply = llm.chat.completions.create(model=MODEL, messages=messages, tools=TOOLS, max_tokens=800,
                                             extra_body={"chat_template_kwargs": {"enable_thinking": False}}).choices[0].message
