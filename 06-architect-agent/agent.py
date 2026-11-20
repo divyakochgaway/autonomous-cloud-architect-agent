@@ -184,6 +184,34 @@ def teardown(environment_id):
         return f"teardown failed: {e}"
 
 
+def list_linodes():
+    """Read-only: every Linode on the account."""
+    try:
+        return json.dumps([{"id": l.id, "label": l.label, "status": l.status, "region": l.region.id, "ip": l.ipv4[0]}
+                           for l in linode.linode.instances()])
+    except Exception as e:
+        return f"list_linodes failed: {e}"
+
+
+def list_firewalls():
+    """Read-only: every Cloud Firewall on the account."""
+    try:
+        return json.dumps([{"id": f.id, "label": f.label, "status": f.status,
+                            "inbound_rules": [f"{r.action} {r.protocol} {r.ports}" for r in f.rules.inbound],
+                            "inbound_policy": f.rules.inbound_policy} for f in linode.networking.firewalls()])
+    except Exception as e:
+        return f"list_firewalls failed: {e}"
+
+
+def list_buckets():
+    """Read-only: every Object Storage bucket on the account."""
+    try:
+        return json.dumps([{"bucket": b.label, "region": b.region, "size_bytes": b.size}
+                           for b in linode.object_storage.buckets()])
+    except Exception as e:
+        return f"list_buckets failed: {e}"
+
+
 def delete_bucket(bucket):
     """A bucket must be empty to delete, so empty it with a temporary key limited to it."""
     tmp = linode.object_storage.keys_create(
@@ -205,7 +233,8 @@ def delete_bucket(bucket):
 
 
 FUNCS = {f.__name__: f for f in (create_vpc, create_linode, create_and_attach_firewall, provision_object_storage,
-                                 upload_manifest, record_environment, list_environments, teardown)}
+                                 upload_manifest, record_environment, list_environments, teardown,
+                                 list_linodes, list_firewalls, list_buckets)}
 
 
 def tool(name, description, props, required):
@@ -231,22 +260,30 @@ TOOLS = [
          {"label": S, "linode_id": I, "linode_ip": S, "firewall_id": I, "vpc_id": I, "bucket": S, "key_id": I},
          ["label", "linode_id", "linode_ip", "firewall_id", "vpc_id", "bucket", "key_id"]),
     tool("list_environments", "List every environment built so far, from PostgreSQL.", {}, []),
+    tool("list_linodes", "List all Linodes on the Akamai account (id, label, status, region, IP).", {}, []),
+    tool("list_firewalls", "List all Cloud Firewalls on the account with their inbound rules.", {}, []),
+    tool("list_buckets", "List all Object Storage buckets on the account.", {}, []),
     tool("teardown", "Delete all resources of a recorded environment by its environment id.",
          {"environment_id": I}, ["environment_id"]),
 ]
 
-SYSTEM = f"""You are an Autonomous Cloud Architect for Akamai Cloud. You act through tools.
-The user's public IP is {MY_IP}. Use it as my_ip for firewalls without asking.
+def make_system(ip):
+    return f"""You are an Autonomous Cloud Architect for Akamai Cloud. You act through tools.
+The user's public IP is {ip}. Use it as my_ip for firewalls without asking.
 When asked for a "secure environment" (or data/scraping environment), call tools ONE AT A TIME, in this order,
 passing real IDs from earlier results:
 1. create_vpc (default region us-sea)  2. create_linode with the subnet_id (default region us-sea)
 3. create_and_attach_firewall  4. provision_object_storage  5. upload_manifest
 6. record_environment (use key_id from step 4)
 Finally summarize what was built: Linode ID and IP, firewall rules, bucket URL, VPC, and the PostgreSQL record id.
+For questions about the account use list_linodes, list_firewalls, list_buckets or list_environments.
 Never print secret keys. Use a short lowercase label such as 'scraper'. Do not ask questions the defaults answer."""
 
 
-def run_agent(messages):
+SYSTEM = make_system(MY_IP)
+
+
+def run_agent(messages, on_step=None):
     """Keep calling the model until it stops asking for tools."""
     while True:
         reply = llm.chat.completions.create(model=MODEL, messages=messages, tools=TOOLS, max_tokens=800,
@@ -257,8 +294,13 @@ def run_agent(messages):
         for call in reply.tool_calls:
             args = json.loads(call.function.arguments)
             print(f"  -> {call.function.name}({args})")
+            if on_step:
+                on_step({"tool": call.function.name, "args": args, "status": "running"})
             result = FUNCS[call.function.name](**args)
             print(f"     {result[:200]}")
+            if on_step:
+                on_step({"tool": call.function.name, "args": args, "status": "failed" if "failed" in result[:60] else "done",
+                         "result": result[:300]})
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
 

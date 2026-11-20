@@ -1,0 +1,18 @@
+# Runs the Cloud Architect backend on port 8000 and restarts it if it stops.
+# Install: scp this file to /etc/systemd/system/architect.service on the Linode, then
+#   systemctl daemon-reload && systemctl enable --now architect
+[Unit]
+Description=Cloud Architect agent backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/root/app
+Environment=HOME=/root
+Environment=PORT=8000
+ExecStart=/root/.local/bin/uv run /root/app/06-architect-agent/server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

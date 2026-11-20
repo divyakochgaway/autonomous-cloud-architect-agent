@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Akamai Cloud Architect",
+  "version": "1.0.0",
+  "description": "Chat with an AI agent that builds and monitors infrastructure on cloud.linode.com.",
+  "host_permissions": ["http://172.234.240.177:8000/*", "http://localhost:8010/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["https://cloud.linode.com/*"], "js": ["content.js"], "run_at": "document_idle" }
+  ]
+}

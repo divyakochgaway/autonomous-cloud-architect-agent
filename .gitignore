@@ -12,3 +12,6 @@ __pycache__/
 
 # Instructor notes stay on the instructor's machine
 instructor/
+
+# Extension secrets (backend key)
+06-architect-agent/extension/config.js
